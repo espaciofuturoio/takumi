@@ -177,6 +177,47 @@ impl ComputedStyle {
       || !self.backdrop_filter.is_empty()
       || self.mix_blend_mode != BlendMode::Normal
       || self.has_shape_mask()
+      || self.has_3d_transform()
+  }
+
+  /// Whether `transform` lists a 3D function.
+  pub fn has_3d_transform(&self) -> bool {
+    self
+      .transform
+      .as_ref()
+      .is_some_and(|transforms| transforms.iter().any(|transform| transform.is_3d()))
+  }
+
+  /// The element's local transform as a plane homography, when its 3D functions make it
+  /// projective. Paint then draws the element flat and maps its layer through it.
+  pub fn projective_transform(
+    &self,
+    width: f32,
+    height: f32,
+    sizing: &SizingContext,
+  ) -> Option<Homography> {
+    let homography = self.local_homography(width, height, sizing)?;
+
+    homography.to_affine().is_none().then_some(homography)
+  }
+
+  fn local_homography(
+    &self,
+    width: f32,
+    height: f32,
+    sizing: &SizingContext,
+  ) -> Option<Homography> {
+    if !self.has_3d_transform() {
+      return None;
+    }
+    let transforms = self.transform.as_ref()?;
+    let (origin_x, origin_y) = self.transform_origin.to_point(sizing, width, height);
+    let mut matrix: Matrix3d = self.pre_transform(width, height, sizing).into();
+
+    matrix *= Matrix3d::from_transforms(transforms.iter(), sizing, width, height);
+    matrix *= Affine::translation(-origin_x, -origin_y).into();
+
+    Some(matrix.flatten())
   }
 
   /// Whether `clip-path` or a non-empty `mask-image` shapes the element's
@@ -194,6 +235,21 @@ impl ComputedStyle {
   /// (CSS Transforms Level 2 order: `T(origin) * translate * rotate * scale *
   /// transform * T(-origin)`).
   pub fn local_transform(&self, width: f32, height: f32, sizing: &SizingContext) -> Affine {
+    if let Some(homography) = self.local_homography(width, height, sizing) {
+      return homography.to_affine().unwrap_or(Affine::IDENTITY);
+    }
+    let (origin_x, origin_y) = self.transform_origin.to_point(sizing, width, height);
+    let mut local = self.pre_transform(width, height, sizing);
+
+    if let Some(node_transform) = &self.transform {
+      local *= Affine::from_transforms(node_transform.iter(), sizing, width, height);
+    }
+    local *= Affine::translation(-origin_x, -origin_y);
+    local
+  }
+
+  /// `T(origin) * translate * rotate * scale * offset`: the local transform up to `transform`.
+  fn pre_transform(&self, width: f32, height: f32, sizing: &SizingContext) -> Affine {
     let (origin_x, origin_y) = self.transform_origin.to_point(sizing, width, height);
     let mut local = Affine::translation(origin_x, origin_y);
 
@@ -241,10 +297,6 @@ impl ComputedStyle {
         local *= Affine::translation(origin_x - anchor_x, origin_y - anchor_y);
       }
     }
-    if let Some(node_transform) = &self.transform {
-      local *= Affine::from_transforms(node_transform.iter(), sizing, width, height);
-    }
-    local *= Affine::translation(-origin_x, -origin_y);
     local
   }
 

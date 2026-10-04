@@ -26,6 +26,7 @@ mod image_drawing;
 pub(crate) mod inline_drawing;
 mod node_paint;
 mod path;
+mod projection;
 /// Main image renderer and viewport management
 mod render;
 mod simd;
