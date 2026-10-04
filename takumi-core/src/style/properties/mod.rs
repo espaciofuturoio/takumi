@@ -493,6 +493,23 @@ impl_css_enum!(
   "auto" => Isolation::Auto
 );
 
+/// Whether the back face of a transformed element is drawn.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[non_exhaustive]
+pub enum BackfaceVisibility {
+  /// The back face is drawn, mirrored.
+  #[default]
+  Visible,
+  /// The element is not drawn while its back faces the viewer.
+  Hidden,
+}
+
+impl_css_enum!(
+  BackfaceVisibility,
+  "visible" => BackfaceVisibility::Visible,
+  "hidden" => BackfaceVisibility::Hidden
+);
+
 /// Defines whether an element is visible.
 ///
 /// This controls whether an element is rendered, but unlike `display: none`,

@@ -93,6 +93,7 @@ impl ComputedStyle {
       || self.is_z_index_applicable(is_flex_or_grid_item)
       || self.has_transform_related_property()
       || self.needs_offscreen_compositing()
+      || self.perspective.is_some()
   }
 
   /// Whether the element floats in a paint layer of its own, as Blink's floats with a
@@ -188,36 +189,46 @@ impl ComputedStyle {
       .is_some_and(|transforms| transforms.iter().any(|transform| transform.is_3d()))
   }
 
-  /// The element's local transform as a plane homography, when its 3D functions make it
-  /// projective. Paint then draws the element flat and maps its layer through it.
-  pub fn projective_transform(
+  /// The perspective this box gives its children, `T(origin) * perspective(d) * T(-origin)` in
+  /// its border-box space, or `None` for `perspective: none`.
+  pub fn child_perspective(
     &self,
     width: f32,
     height: f32,
     sizing: &SizingContext,
-  ) -> Option<Homography> {
-    let homography = self.local_homography(width, height, sizing)?;
+  ) -> Option<Matrix3d> {
+    let distance = self.perspective?.to_px(sizing, 0.0);
+    let (origin_x, origin_y) = self.perspective_origin.to_point(sizing, width, height);
 
-    homography.to_affine().is_none().then_some(homography)
+    Some(
+      Matrix3d::from(Affine::translation(origin_x, origin_y))
+        * Matrix3d::perspective(distance)
+        * Matrix3d::from(Affine::translation(-origin_x, -origin_y)),
+    )
   }
 
-  fn local_homography(
+  /// The element's local 4x4 transform, when its own 3D functions or the `perspective` of its
+  /// containing block (`perspective`, in this box's space) take it out of the plane.
+  pub fn local_matrix3d(
     &self,
     width: f32,
     height: f32,
     sizing: &SizingContext,
-  ) -> Option<Homography> {
+    perspective: Option<Matrix3d>,
+  ) -> Option<Matrix3d> {
     if !self.has_3d_transform() {
       return None;
     }
-    let transforms = self.transform.as_ref()?;
     let (origin_x, origin_y) = self.transform_origin.to_point(sizing, width, height);
-    let mut matrix: Matrix3d = self.pre_transform(width, height, sizing).into();
+    let mut matrix = perspective.unwrap_or(Matrix3d::IDENTITY);
 
-    matrix *= Matrix3d::from_transforms(transforms.iter(), sizing, width, height);
+    matrix *= self.pre_transform(width, height, sizing).into();
+    if let Some(transforms) = &self.transform {
+      matrix *= Matrix3d::from_transforms(transforms.iter(), sizing, width, height);
+    }
     matrix *= Affine::translation(-origin_x, -origin_y).into();
 
-    Some(matrix.flatten())
+    Some(matrix)
   }
 
   /// Whether `clip-path` or a non-empty `mask-image` shapes the element's
@@ -235,8 +246,8 @@ impl ComputedStyle {
   /// (CSS Transforms Level 2 order: `T(origin) * translate * rotate * scale *
   /// transform * T(-origin)`).
   pub fn local_transform(&self, width: f32, height: f32, sizing: &SizingContext) -> Affine {
-    if let Some(homography) = self.local_homography(width, height, sizing) {
-      return homography.to_affine().unwrap_or(Affine::IDENTITY);
+    if let Some(matrix) = self.local_matrix3d(width, height, sizing, None) {
+      return matrix.flatten().to_affine().unwrap_or(Affine::IDENTITY);
     }
     let (origin_x, origin_y) = self.transform_origin.to_point(sizing, width, height);
     let mut local = self.pre_transform(width, height, sizing);
