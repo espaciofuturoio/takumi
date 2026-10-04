@@ -1,0 +1,93 @@
+name: EF Sync
+
+# Daily: mirror upstream master, rebase our patches onto it, test, release `-ef.<n>`.
+# On a conflict or a failure it opens an issue on this fork (never upstream). FORK.md "Sync".
+
+on:
+  schedule:
+    - cron: "17 9 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: ef-sync
+  cancel-in-progress: false
+
+jobs:
+  rebase:
+    name: Rebase onto upstream
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.sync.outputs.changed }}
+      sha: ${{ steps.sync.outputs.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: espaciofuturo
+          fetch-depth: 0
+          # Pushing upstream commits that edit .github/workflows needs a token with the
+          # `workflow` scope; GITHUB_TOKEN cannot have it (FORK.md "Sync token").
+          token: ${{ secrets.EF_SYNC_TOKEN || github.token }}
+
+      - name: Rebase and push
+        id: sync
+        env:
+          CONFLICTS_FILE: ${{ runner.temp }}/conflicts.txt
+        run: |
+          git config user.name "espaciofuturo-sync"
+          git config user.email "dev@espaciofuturo.io"
+          set +e
+          bash scripts/ef-sync.sh --push 2>&1 | tee "$RUNNER_TEMP/sync.log"
+          status=${PIPESTATUS[0]}
+          set -e
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          exit "$status"
+
+      - name: Open an issue
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          {
+            if [ -s "$RUNNER_TEMP/conflicts.txt" ]; then
+              echo "Rebasing \`espaciofuturo\` onto upstream master conflicts. Files:"
+              echo; echo '```'; cat "$RUNNER_TEMP/conflicts.txt"; echo '```'
+            else
+              echo "EF Sync failed before testing. Log tail:"
+              echo; echo '```'; tail -40 "$RUNNER_TEMP/sync.log"; echo '```'
+              echo
+              echo "A \`refusing to allow ... workflow\` error means upstream edited .github/workflows: run \`bash scripts/ef-sync.sh --push\` by hand or set EF_SYNC_TOKEN (FORK.md)."
+            fi
+            echo; echo "Run: $RUN_URL"
+            echo; echo "Resolve by hand: FORK.md \"Sync\". Close this issue once \`espaciofuturo\` is rebased and released."
+          } > body.md
+          gh issue create --repo "$GITHUB_REPOSITORY" --title "EF Sync blocked $(date -u +%F)" --body-file body.md --label ef-sync \
+            || gh issue create --repo "$GITHUB_REPOSITORY" --title "EF Sync blocked $(date -u +%F)" --body-file body.md
+
+  release:
+    name: Test and release
+    needs: rebase
+    if: needs.rebase.outputs.changed == 'true'
+    uses: ./.github/workflows/ef-release.yml
+    with:
+      ref: ${{ needs.rebase.outputs.sha }}
+    secrets: inherit
+
+  report-release-failure:
+    name: Report release failure
+    needs: [rebase, release]
+    if: failure() && needs.rebase.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SHA: ${{ needs.rebase.outputs.sha }}
+        run: |
+          printf 'The rebased `espaciofuturo` (%s) failed its tests or build; no release was cut.\n\nRun: %s\n' "$SHA" "$RUN_URL" > body.md
+          gh issue create --repo "$GITHUB_REPOSITORY" --title "EF Sync: release failed $(date -u +%F)" --body-file body.md --label ef-sync \
+            || gh issue create --repo "$GITHUB_REPOSITORY" --title "EF Sync: release failed $(date -u +%F)" --body-file body.md
