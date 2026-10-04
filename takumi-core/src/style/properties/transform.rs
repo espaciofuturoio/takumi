@@ -131,6 +131,15 @@ impl Animatable for Transform {
       (Transform::RotateY(from_angle), Transform::RotateY(to_angle)) => Transform::RotateY(
         Angle::interpolated(&from_angle, &to_angle, progress, sizing, current_color),
       ),
+      (
+        Transform::Rotate3d(x, y, z, from_angle),
+        Transform::Rotate3d(to_x, to_y, to_z, to_angle),
+      ) if (x, y, z) == (to_x, to_y, to_z) => Transform::Rotate3d(
+        x,
+        y,
+        z,
+        Angle::interpolated(&from_angle, &to_angle, progress, sizing, current_color),
+      ),
       (Transform::TranslateZ(from_z), Transform::TranslateZ(to_z)) => Transform::TranslateZ(
         Animatable::interpolated(&from_z, &to_z, progress, sizing, current_color),
       ),
@@ -241,6 +250,36 @@ impl Matrix3d {
     matrix
   }
 
+  /// The determinant.
+  pub fn determinant(&self) -> f32 {
+    let m = |row: usize, column: usize| self.at(row, column);
+    let s0 = m(0, 0) * m(1, 1) - m(1, 0) * m(0, 1);
+    let s1 = m(0, 0) * m(1, 2) - m(1, 0) * m(0, 2);
+    let s2 = m(0, 0) * m(1, 3) - m(1, 0) * m(0, 3);
+    let s3 = m(0, 1) * m(1, 2) - m(1, 1) * m(0, 2);
+    let s4 = m(0, 1) * m(1, 3) - m(1, 1) * m(0, 3);
+    let s5 = m(0, 2) * m(1, 3) - m(1, 2) * m(0, 3);
+    let c5 = m(2, 2) * m(3, 3) - m(3, 2) * m(2, 3);
+    let c4 = m(2, 1) * m(3, 3) - m(3, 1) * m(2, 3);
+    let c3 = m(2, 1) * m(3, 2) - m(3, 1) * m(2, 2);
+    let c2 = m(2, 0) * m(3, 3) - m(3, 0) * m(2, 3);
+    let c1 = m(2, 0) * m(3, 2) - m(3, 0) * m(2, 2);
+    let c0 = m(2, 0) * m(3, 1) - m(3, 0) * m(2, 1);
+
+    s0 * c5 - s1 * c4 + s2 * c3 + s3 * c2 - s4 * c1 + s5 * c0
+  }
+
+  /// Whether the element's back faces the viewer, as Blink's `IsBackFaceVisible` decides: the
+  /// inverse maps the screen normal to a negative z.
+  pub fn is_back_facing(&self) -> bool {
+    let determinant = self.determinant();
+    if determinant.abs() <= f32::EPSILON {
+      return false;
+    }
+
+    self.flatten().determinant() / determinant < 0.0
+  }
+
   /// The 3x3 homography this matrix applies to the `z = 0` plane, row-major.
   pub fn flatten(&self) -> Homography {
     Homography([
@@ -341,6 +380,26 @@ impl Homography {
       (m[0] * x + m[1] * y + m[2]) / w,
       (m[3] * x + m[4] * y + m[5]) / w,
     ))
+  }
+
+  /// The determinant.
+  pub fn determinant(&self) -> f32 {
+    let [a, b, c, d, e, f, g, h, i] = self.0;
+
+    a * (e * i - f * h) + b * (f * g - d * i) + c * (d * h - e * g)
+  }
+
+  /// The axis-aligned bounds of the rectangle `(left, top, right, bottom)` mapped through this
+  /// homography, or `None` when a corner lands behind the viewer.
+  pub fn map_bounds(&self, left: f32, top: f32, right: f32, bottom: f32) -> Option<[f32; 4]> {
+    let mut out = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
+
+    for (x, y) in [(left, top), (right, top), (left, bottom), (right, bottom)] {
+      let (x, y) = self.map_point(x, y)?;
+      out = [out[0].min(x), out[1].min(y), out[2].max(x), out[3].max(y)];
+    }
+
+    Some(out)
   }
 
   /// The inverse map, or `None` when it is singular.
@@ -988,6 +1047,19 @@ mod tests {
     let (projected_x, projected_y) = homography.map_point(40.0, -70.0).unwrap();
     let (x, y) = inverse.map_point(projected_x, projected_y).unwrap();
     assert!((x - 40.0).abs() < 1e-3 && (y + 70.0).abs() < 1e-3);
+  }
+
+  #[test]
+  fn back_facing_follows_the_rotation_past_ninety_degrees() {
+    let rotate_y = |degrees| {
+      Matrix3d::perspective(600.0) * Matrix3d::rotation(0.0, 1.0, 0.0, Angle::new(degrees))
+    };
+
+    assert!(!rotate_y(60.0).is_back_facing());
+    assert!(rotate_y(120.0).is_back_facing());
+    assert!(rotate_y(240.0).is_back_facing());
+    assert!(!Matrix3d::from(Affine::scale(-1.0, 1.0)).is_back_facing());
+    assert!((Matrix3d::from(Affine::scale(2.0, 3.0)).determinant() - 6.0).abs() < 1e-5);
   }
 
   #[test]

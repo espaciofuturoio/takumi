@@ -135,3 +135,7 @@ harness = false
 [[bench]]
 name = "blur_large"
 harness = false
+
+[[bench]]
+name = "transform_3d"
+harness = false
