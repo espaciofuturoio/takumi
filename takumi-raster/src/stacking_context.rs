@@ -14,7 +14,8 @@ use crate::{
   draw_debug_border,
   inline_drawing::draw_own_content,
   layout::tree::{LayoutResults, RenderNode},
-  style::{Affine, BlendMode, Filter, SizingContext},
+  projection::project_layer,
+  style::{Affine, BlendMode, Filter, Homography, SizingContext},
 };
 
 /// Paints `scene` onto `canvas` chunk by chunk, entering each chunk's clips and effects.
@@ -58,6 +59,8 @@ struct OpenEffect {
   hidden: bool,
   owner: Option<Vec<usize>>,
   filter_bounds: Option<SceneBounds>,
+  /// The device-space map a 3D-transformed group's flat paint goes through.
+  projection: Option<Homography>,
 }
 
 /// Paints chunks and enters their clips and effects on one canvas.
@@ -148,9 +151,18 @@ impl ScenePainter<'_, '_> {
       )?;
     }
 
+    let projection = style
+      .projective_transform(layout.size.width, layout.size.height, &node.context.sizing)
+      .map(|local| {
+        let base = Homography::from(paint.transform);
+        let base_inverse = paint.transform.invert().map_or(base, Homography::from);
+
+        base * local * base_inverse
+      });
     let viewport = canvas.viewport();
     let placement = effect
       .bounds
+      .filter(|_| projection.is_none())
       .and_then(|bounds| viewport.clamp_bounds(bounds, 2))
       .unwrap_or_else(|| viewport.placement());
     let layer = Box::new(canvas.begin_subcanvas(placement)?);
@@ -170,6 +182,7 @@ impl ScenePainter<'_, '_> {
       hidden: false,
       owner: Some(paint.path.clone()),
       filter_bounds: effect.bounds,
+      projection,
     })
   }
 
@@ -197,6 +210,12 @@ impl ScenePainter<'_, '_> {
       apply_filters(canvas, node, effect.filter_bounds)?;
     }
 
+    if let Some(projection) = effect.projection {
+      let origin = canvas.viewport().origin;
+
+      canvas.with_pixmap(|layer| project_layer(layer, origin, projection, effect.filter_bounds));
+    }
+
     canvas.composite_subcanvas(
       *layer,
       node.context.style.mix_blend_mode,
@@ -216,6 +235,7 @@ impl OpenEffect {
       hidden: true,
       owner: None,
       filter_bounds: None,
+      projection: None,
     }
   }
 }
