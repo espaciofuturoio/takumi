@@ -31,6 +31,16 @@ const FLOOR: f32 = 90.0;
 /// Shrink this as the backend improves; entries are `(name, why)`.
 const KNOWN_DIVERGENT: &[(&str, &str)] = &[
   (
+    "style_perspective_cube",
+    "svg paints a projective 3D transform flat; only raster resamples the layer \
+     through the homography (83.6%, floor is 90%)",
+  ),
+  (
+    "style_transform_3d_card",
+    "svg paints a projective 3D transform flat; only raster resamples the layer \
+     through the homography (87.6%, floor is 90%)",
+  ),
+  (
     "style_background_size_auto_axis_round",
     "raster is the approximate side here: it snaps the 78.75px round tiles to \
      whole pixels, so each tile drifts up to half a pixel from svg's exact \
