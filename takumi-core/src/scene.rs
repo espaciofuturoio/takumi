@@ -24,7 +24,9 @@ use crate::{
   paint_property::{ContainerContents, NodeProperties, PropertyState, PropertyTrees},
   shadow::SizedShadow,
   sort_key::sort_by_key,
-  style::{Affine, BlurType, ComputedStyle, Display, Float},
+  style::{
+    Affine, BackfaceVisibility, BlurType, ComputedStyle, Display, Float, Homography, Matrix3d,
+  },
   viewport::Viewport,
 };
 
@@ -37,6 +39,9 @@ pub struct NodePaint {
   pub node_id: NodeId,
   /// Accumulated transform applied when painting.
   pub transform: Affine,
+  /// The local plane homography a 3D transform projects the node's flat paint through, when it
+  /// is not affine. `transform` then leaves it out.
+  pub projection: Option<Homography>,
   /// Blink's paint offset of the border box: where it sits in the space paint snaps to pixels in.
   pub paint_offset: Point<f32>,
   /// Containing-block size; `None` on an axis is indefinite.
@@ -45,6 +50,17 @@ pub struct NodePaint {
   pub paint_bounds: Option<SceneBounds>,
   /// The clips and effects it paints under.
   pub properties: NodeProperties,
+}
+
+impl NodePaint {
+  /// `projection` in device space: `transform * projection * transform⁻¹`.
+  pub fn device_projection(&self) -> Option<Homography> {
+    let local = self.projection?;
+    let base = Homography::from(self.transform);
+    let base_inverse = Homography::from(self.transform.invert()?);
+
+    Some(base * local * base_inverse)
+  }
 }
 
 /// Device-space integer bounds of a node or stacking context's paint output.
@@ -266,6 +282,8 @@ impl StackingContextNode {
 #[derive(Clone, Copy)]
 struct ChildBase {
   transform: Affine,
+  /// The `perspective` of the box, which its children's 3D transforms project through.
+  perspective: Option<Matrix3d>,
   paint_offset: Point<f32>,
 }
 
@@ -353,6 +371,7 @@ impl SceneRequest<'_> {
       node_id: NodeId::ROOT,
       base: ChildBase {
         transform,
+        perspective: None,
         paint_offset,
       },
       container_size,
@@ -372,11 +391,29 @@ impl SceneRequest<'_> {
         continue;
       }
 
-      let local_transform = current.context.style.local_transform(
+      let style = &current.context.style;
+      let (width, height, sizing) = (
         layout.size.width,
         layout.size.height,
         &current.context.sizing,
       );
+      let perspective = visit.base.perspective.map(|perspective| {
+        Matrix3d::from(Affine::translation(-layout.location.x, -layout.location.y))
+          * perspective
+          * Matrix3d::from(Affine::translation(layout.location.x, layout.location.y))
+      });
+      let matrix = style.local_matrix3d(width, height, sizing, perspective);
+      if style.backface_visibility == BackfaceVisibility::Hidden
+        && matrix.is_some_and(|matrix| matrix.is_back_facing())
+      {
+        continue;
+      }
+      let flat = matrix.map(|matrix| matrix.flatten());
+      let projection = flat.filter(|flat| flat.to_affine().is_none());
+      let local_transform = match flat {
+        Some(flat) => flat.to_affine().unwrap_or(Affine::IDENTITY),
+        None => style.local_transform(width, height, sizing),
+      };
       let mut current_transform = visit.base.transform;
       current_transform *= Affine::translation(layout.location.x, layout.location.y);
       current_transform *= local_transform;
@@ -385,6 +422,7 @@ impl SceneRequest<'_> {
       }
       let child_base = ChildBase {
         transform: current_transform,
+        perspective: style.child_perspective(width, height, sizing),
         paint_offset: current.context.style.paint_offset_after_translation(
           visit.base.paint_offset + layout.location,
           local_transform,
@@ -414,6 +452,7 @@ impl SceneRequest<'_> {
         path: visit.path.clone(),
         node_id: visit.node_id,
         transform: current_transform,
+        projection,
         paint_offset: child_base.paint_offset,
         container_size: visit.container_size,
         paint_bounds: with_bounds
@@ -767,6 +806,14 @@ fn set_effect_bounds(
         Some((owner, node)) => outset_bounds(union, filter_reach(node), owner.transform),
         None => union,
       };
+    let projected = owners[id.index()].and_then(NodePaint::device_projection);
+    let (grown, unknown) = match (projected, grown) {
+      (Some(projection), Some(flat)) => match project_bounds(flat, projection) {
+        Some(projected) => (merge_bounds(Some(flat), Some(projected)), unknown),
+        None => (None, true),
+      },
+      _ => (grown, unknown),
+    };
 
     if let Some(parent) = properties.effect(id).parent {
       let (parent_union, parent_unknown) = &mut bounds[parent.index()];
@@ -777,6 +824,25 @@ fn set_effect_bounds(
 
     properties.set_effect_bounds(id, (!unknown).then_some(grown).flatten());
   }
+}
+
+/// The device bounds `bounds` covers once projected through `projection`, or `None` when a
+/// corner lands behind the viewer.
+fn project_bounds(bounds: SceneBounds, projection: Homography) -> Option<SceneBounds> {
+  let [left, top, right, bottom] = projection.map_bounds(
+    bounds.left as f32,
+    bounds.top as f32,
+    bounds.right as f32,
+    bounds.bottom as f32,
+  )?;
+  let clamp = |value: f32| value.clamp(0.0, u32::MAX as f32) as usize;
+
+  Some(SceneBounds {
+    left: clamp(left.floor() - 1.0),
+    top: clamp(top.floor() - 1.0),
+    right: clamp(right.ceil() + 1.0),
+    bottom: clamp(bottom.ceil() + 1.0),
+  })
 }
 
 /// How far a shadow's ink reaches past the shape that casts it.

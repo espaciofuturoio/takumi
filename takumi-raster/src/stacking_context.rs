@@ -151,18 +151,10 @@ impl ScenePainter<'_, '_> {
       )?;
     }
 
-    let projection = style
-      .projective_transform(layout.size.width, layout.size.height, &node.context.sizing)
-      .map(|local| {
-        let base = Homography::from(paint.transform);
-        let base_inverse = paint.transform.invert().map_or(base, Homography::from);
-
-        base * local * base_inverse
-      });
+    let projection = paint.device_projection();
     let viewport = canvas.viewport();
     let placement = effect
       .bounds
-      .filter(|_| projection.is_none())
       .and_then(|bounds| viewport.clamp_bounds(bounds, 2))
       .unwrap_or_else(|| viewport.placement());
     let layer = Box::new(canvas.begin_subcanvas(placement)?);
@@ -213,7 +205,7 @@ impl ScenePainter<'_, '_> {
     if let Some(projection) = effect.projection {
       let origin = canvas.viewport().origin;
 
-      canvas.with_pixmap(|layer| project_layer(layer, origin, projection, effect.filter_bounds));
+      canvas.with_pixmap(|layer| project_layer(layer, origin, projection));
     }
 
     canvas.composite_subcanvas(

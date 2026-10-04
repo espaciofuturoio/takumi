@@ -2,77 +2,78 @@ use std::ops::Range;
 
 use tiny_skia::Pixmap;
 
-use crate::{geometry::Point, scene::SceneBounds, style::Homography};
+use crate::{geometry::Point, style::Homography};
 
 /// Redraws `layer`, whose top-left pixel sits at device `origin`, through the device-space
 /// `projection`, sampling the flat paint bilinearly as Blink composites a 3D-transformed layer.
-/// Only the pixels the projected `source` bounds can reach are resampled, when they are known.
-pub(crate) fn project_layer(
-  layer: &mut Pixmap,
-  origin: Point<u32>,
-  projection: Homography,
-  source: Option<SceneBounds>,
-) {
+/// Only the pixels the projected layer can reach are resampled.
+pub(crate) fn project_layer(layer: &mut Pixmap, origin: Point<u32>, projection: Homography) {
   let Some(inverse) = projection.invert() else {
     layer.fill(tiny_skia::Color::TRANSPARENT);
     return;
   };
   let width = layer.width() as usize;
   let height = layer.height() as usize;
-  let (columns, rows) = source
-    .and_then(|bounds| projected_extent(bounds, projection, origin, width, height))
-    .unwrap_or((0..width, 0..height));
+  let (columns, rows) =
+    projected_extent(projection, origin, width, height).unwrap_or((0..width, 0..height));
   let source = layer.data().to_vec();
   let target = layer.data_mut();
+  let [a, b, c, d, e, f, g, h, i] = inverse.0;
+  let (offset_x, offset_y) = (origin.x as f32 + 0.5, origin.y as f32 + 0.5);
 
   target.fill(0);
 
   for y in rows {
-    let device_y = origin.y as f32 + y as f32 + 0.5;
+    let device_y = offset_y + y as f32;
+    let device_x = offset_x + columns.start as f32;
+    let mut numerator_x = a * device_x + b * device_y + c;
+    let mut numerator_y = d * device_x + e * device_y + f;
+    let mut denominator = g * device_x + h * device_y + i;
+    let row = y * width * 4;
 
     for x in columns.clone() {
-      let device_x = origin.x as f32 + x as f32 + 0.5;
-      let pixel = inverse
-        .map_point(device_x, device_y)
-        .map(|(source_x, source_y)| {
-          sample_bilinear(
-            &source,
-            width,
-            height,
-            source_x - origin.x as f32 - 0.5,
-            source_y - origin.y as f32 - 0.5,
-          )
-        })
-        .unwrap_or([0; 4]);
-      let offset = (y * width + x) * 4;
+      if denominator > f32::EPSILON {
+        let source_x = numerator_x / denominator - offset_x;
+        let source_y = numerator_y / denominator - offset_y;
+        let offset = row + x * 4;
 
-      target[offset..offset + 4].copy_from_slice(&pixel);
+        target[offset..offset + 4]
+          .copy_from_slice(&sample_bilinear(&source, width, height, source_x, source_y));
+      }
+      numerator_x += a;
+      numerator_y += d;
+      denominator += g;
     }
   }
 }
 
 fn sample_bilinear(source: &[u8], width: usize, height: usize, x: f32, y: f32) -> [u8; 4] {
+  if x <= -1.0 || y <= -1.0 || x >= width as f32 || y >= height as f32 {
+    return [0; 4];
+  }
   let x0 = x.floor();
   let y0 = y.floor();
   let fx = x - x0;
   let fy = y - y0;
-  let texel = |tx: f32, ty: f32| -> [f32; 4] {
-    if tx < 0.0 || ty < 0.0 || tx >= width as f32 || ty >= height as f32 {
+  let (x0, y0) = (x0 as isize, y0 as isize);
+  let texel = |tx: isize, ty: isize| -> [f32; 4] {
+    if tx < 0 || ty < 0 || tx as usize >= width || ty as usize >= height {
       return [0.0; 4];
     }
     let offset = (ty as usize * width + tx as usize) * 4;
+    let pixel = &source[offset..offset + 4];
 
     [
-      f32::from(source[offset]),
-      f32::from(source[offset + 1]),
-      f32::from(source[offset + 2]),
-      f32::from(source[offset + 3]),
+      f32::from(pixel[0]),
+      f32::from(pixel[1]),
+      f32::from(pixel[2]),
+      f32::from(pixel[3]),
     ]
   };
   let top_left = texel(x0, y0);
-  let top_right = texel(x0 + 1.0, y0);
-  let bottom_left = texel(x0, y0 + 1.0);
-  let bottom_right = texel(x0 + 1.0, y0 + 1.0);
+  let top_right = texel(x0 + 1, y0);
+  let bottom_left = texel(x0, y0 + 1);
+  let bottom_right = texel(x0 + 1, y0 + 1);
   let mut out = [0; 4];
 
   for channel in 0..4 {
@@ -85,36 +86,22 @@ fn sample_bilinear(source: &[u8], width: usize, height: usize, x: f32, y: f32) -
   out
 }
 
-/// The layer columns and rows the four projected corners of `bounds` span, or `None` when a
-/// corner lands behind the viewer.
+/// The layer columns and rows the projected layer spans, or `None` when a corner lands behind
+/// the viewer.
 fn projected_extent(
-  bounds: SceneBounds,
   projection: Homography,
   origin: Point<u32>,
   width: usize,
   height: usize,
 ) -> Option<(Range<usize>, Range<usize>)> {
-  let corners = [
-    (bounds.left, bounds.top),
-    (bounds.right, bounds.top),
-    (bounds.left, bounds.bottom),
-    (bounds.right, bounds.bottom),
-  ]
-  .map(|(x, y)| projection.map_point(x as f32, y as f32));
-  let (mut left, mut top, mut right, mut bottom) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
-
-  for corner in corners {
-    let (x, y) = corner?;
-    left = left.min(x);
-    top = top.min(y);
-    right = right.max(x);
-    bottom = bottom.max(y);
-  }
+  let (left, top) = (origin.x as f32, origin.y as f32);
+  let [min_x, min_y, max_x, max_y] =
+    projection.map_bounds(left, top, left + width as f32, top + height as f32)?;
   let clamp =
-    |value: f32, offset: u32, limit: usize| ((value - offset as f32).max(0.0) as usize).min(limit);
+    |value: f32, offset: f32, limit: usize| ((value - offset).max(0.0) as usize).min(limit);
 
   Some((
-    clamp(left.floor() - 1.0, origin.x, width)..clamp(right.ceil() + 1.0, origin.x, width),
-    clamp(top.floor() - 1.0, origin.y, height)..clamp(bottom.ceil() + 1.0, origin.y, height),
+    clamp(min_x.floor() - 1.0, left, width)..clamp(max_x.ceil() + 1.0, left, width),
+    clamp(min_y.floor() - 1.0, top, height)..clamp(max_y.ceil() + 1.0, top, height),
   ))
 }
