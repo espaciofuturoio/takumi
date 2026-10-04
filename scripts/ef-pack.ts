@@ -92,7 +92,7 @@ for (const pkg of packages) {
   }
   writeFileSync(join(staging, "package.json"), `${JSON.stringify(manifest, null, 2)}\n`);
 
-  await $`bun pm pack --destination ${out} --filename ${assetName(pkg.name)} --ignore-scripts`
+  await $`bun pm pack --filename ${join(out, assetName(pkg.name))} --ignore-scripts`
     .cwd(staging)
     .quiet();
   rmSync(staging, { recursive: true, force: true });
