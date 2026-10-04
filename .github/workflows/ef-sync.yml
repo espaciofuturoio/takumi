@@ -1,6 +1,6 @@
 name: EF Sync
 
-# Daily: mirror upstream master, rebase our patches onto it, test, release `-ef.<n>`.
+# Daily (09:17 UTC): mirror upstream master, rebase our patches onto it, test, release `-ef.<n>`.
 # On a conflict or a failure it opens an issue on this fork (never upstream). FORK.md "Sync".
 
 on:
