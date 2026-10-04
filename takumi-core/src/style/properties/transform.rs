@@ -27,13 +27,46 @@ pub enum Transform {
   Skew(Angle, Angle),
   /// Applies raw affine matrix values
   Matrix(Affine),
+  /// Projects the element through a perspective of the given distance
+  Perspective(Length),
+  /// Rotates an element around the X-axis
+  RotateX(Angle),
+  /// Rotates an element around the Y-axis
+  RotateY(Angle),
+  /// Rotates an element around the `(x, y, z)` axis
+  Rotate3d(f32, f32, f32, Angle),
+  /// Translates an element along the Z-axis
+  TranslateZ(Length),
+  /// Applies raw 4x4 matrix values
+  Matrix3d(Matrix3d),
+}
+
+impl Transform {
+  /// Whether this function moves the element out of the 2D plane.
+  pub fn is_3d(self) -> bool {
+    matches!(
+      self,
+      Transform::Perspective(_)
+        | Transform::RotateX(_)
+        | Transform::RotateY(_)
+        | Transform::Rotate3d(..)
+        | Transform::TranslateZ(_)
+        | Transform::Matrix3d(_)
+    )
+  }
 }
 
 impl MakeComputed for Transform {
   fn make_computed(&mut self, sizing: &SizingContext) {
-    if let Transform::Translate(x, y) = self {
-      x.make_computed(sizing);
-      y.make_computed(sizing);
+    match self {
+      Transform::Translate(x, y) => {
+        x.make_computed(sizing);
+        y.make_computed(sizing);
+      }
+      Transform::Perspective(length) | Transform::TranslateZ(length) => {
+        length.make_computed(sizing);
+      }
+      _ => {}
     }
   }
 }
@@ -50,6 +83,12 @@ impl Animatable for Transform {
       Transform::Rotate(_) => Transform::Rotate(Angle::zero()),
       Transform::Skew(_, _) => Transform::Skew(Angle::zero(), Angle::zero()),
       Transform::Matrix(_) => Transform::Matrix(Affine::IDENTITY),
+      Transform::RotateX(_) => Transform::RotateX(Angle::zero()),
+      Transform::RotateY(_) => Transform::RotateY(Angle::zero()),
+      Transform::Rotate3d(x, y, z, _) => Transform::Rotate3d(x, y, z, Angle::zero()),
+      Transform::TranslateZ(_) => Transform::TranslateZ(Length::zero()),
+      Transform::Matrix3d(_) => Transform::Matrix3d(Matrix3d::IDENTITY),
+      Transform::Perspective(_) => return None,
     })
   }
 
@@ -86,8 +125,247 @@ impl Animatable for Transform {
         x: lerp(from_affine.x, to_affine.x, progress),
         y: lerp(from_affine.y, to_affine.y, progress),
       }),
+      (Transform::RotateX(from_angle), Transform::RotateX(to_angle)) => Transform::RotateX(
+        Angle::interpolated(&from_angle, &to_angle, progress, sizing, current_color),
+      ),
+      (Transform::RotateY(from_angle), Transform::RotateY(to_angle)) => Transform::RotateY(
+        Angle::interpolated(&from_angle, &to_angle, progress, sizing, current_color),
+      ),
+      (Transform::TranslateZ(from_z), Transform::TranslateZ(to_z)) => Transform::TranslateZ(
+        Animatable::interpolated(&from_z, &to_z, progress, sizing, current_color),
+      ),
+      (Transform::Perspective(from_d), Transform::Perspective(to_d)) => Transform::Perspective(
+        Animatable::interpolated(&from_d, &to_d, progress, sizing, current_color),
+      ),
       _ => discrete(from, to, progress),
     };
+  }
+}
+
+// Column-major, as `matrix3d()` lists its arguments.
+/// A 4x4 transform matrix, for the CSS 3D transform functions.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Matrix3d(pub [f32; 16]);
+
+impl Default for Matrix3d {
+  fn default() -> Self {
+    Self::IDENTITY
+  }
+}
+
+impl Mul<Matrix3d> for Matrix3d {
+  type Output = Matrix3d;
+
+  fn mul(self, rhs: Matrix3d) -> Self::Output {
+    let mut out = [0.0; 16];
+
+    for column in 0..4 {
+      for row in 0..4 {
+        out[column * 4 + row] = (0..4).map(|k| self.at(row, k) * rhs.at(k, column)).sum();
+      }
+    }
+
+    Matrix3d(out)
+  }
+}
+
+impl MulAssign<Matrix3d> for Matrix3d {
+  fn mul_assign(&mut self, rhs: Matrix3d) {
+    *self = *self * rhs;
+  }
+}
+
+impl From<Affine> for Matrix3d {
+  fn from(affine: Affine) -> Self {
+    let mut matrix = Self::IDENTITY;
+    matrix.set(0, 0, affine.a);
+    matrix.set(1, 0, affine.b);
+    matrix.set(0, 1, affine.c);
+    matrix.set(1, 1, affine.d);
+    matrix.set(0, 3, affine.x);
+    matrix.set(1, 3, affine.y);
+    matrix
+  }
+}
+
+impl Matrix3d {
+  /// The identity matrix.
+  pub const IDENTITY: Self = Self([
+    1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+  ]);
+
+  /// The element at `row` and `column`.
+  #[inline(always)]
+  pub fn at(&self, row: usize, column: usize) -> f32 {
+    self.0[column * 4 + row]
+  }
+
+  fn set(&mut self, row: usize, column: usize, value: f32) {
+    self.0[column * 4 + row] = value;
+  }
+
+  /// <https://drafts.csswg.org/css-transforms-2/#funcdef-perspective>
+  pub fn perspective(distance: f32) -> Self {
+    let mut matrix = Self::IDENTITY;
+    matrix.set(3, 2, -1.0 / distance.max(1.0));
+    matrix
+  }
+
+  /// <https://drafts.csswg.org/css-transforms-2/#funcdef-rotate3d>
+  pub fn rotation(x: f32, y: f32, z: f32, angle: Angle) -> Self {
+    let length = (x * x + y * y + z * z).sqrt();
+    if length <= f32::EPSILON {
+      return Self::IDENTITY;
+    }
+    let (x, y, z) = (x / length, y / length, z / length);
+    let (sin, cos) = angle.to_radians().sin_cos();
+    let t = 1.0 - cos;
+    let mut matrix = Self::IDENTITY;
+
+    matrix.set(0, 0, 1.0 - t * (y * y + z * z));
+    matrix.set(0, 1, t * x * y - sin * z);
+    matrix.set(0, 2, t * x * z + sin * y);
+    matrix.set(1, 0, t * x * y + sin * z);
+    matrix.set(1, 1, 1.0 - t * (x * x + z * z));
+    matrix.set(1, 2, t * y * z - sin * x);
+    matrix.set(2, 0, t * x * z - sin * y);
+    matrix.set(2, 1, t * y * z + sin * x);
+    matrix.set(2, 2, 1.0 - t * (x * x + y * y));
+    matrix
+  }
+
+  /// A translation along the Z-axis.
+  pub fn translation_z(z: f32) -> Self {
+    let mut matrix = Self::IDENTITY;
+    matrix.set(2, 3, z);
+    matrix
+  }
+
+  /// The 3x3 homography this matrix applies to the `z = 0` plane, row-major.
+  pub fn flatten(&self) -> Homography {
+    Homography([
+      self.at(0, 0),
+      self.at(0, 1),
+      self.at(0, 3),
+      self.at(1, 0),
+      self.at(1, 1),
+      self.at(1, 3),
+      self.at(3, 0),
+      self.at(3, 1),
+      self.at(3, 3),
+    ])
+  }
+
+  /// Composes the CSS transform functions, 2D and 3D, left to right.
+  pub(crate) fn from_transforms<'a, I: Iterator<Item = &'a Transform>>(
+    transforms: I,
+    sizing: &SizingContext,
+    width: f32,
+    height: f32,
+  ) -> Matrix3d {
+    let mut instance = Matrix3d::IDENTITY;
+
+    for transform in transforms {
+      instance *= match *transform {
+        Transform::Perspective(distance) => Matrix3d::perspective(distance.to_px(sizing, 0.0)),
+        Transform::RotateX(angle) => Matrix3d::rotation(1.0, 0.0, 0.0, angle),
+        Transform::RotateY(angle) => Matrix3d::rotation(0.0, 1.0, 0.0, angle),
+        Transform::Rotate3d(x, y, z, angle) => Matrix3d::rotation(x, y, z, angle),
+        Transform::TranslateZ(z) => Matrix3d::translation_z(z.to_px(sizing, 0.0)),
+        Transform::Matrix3d(matrix) => matrix,
+        two_d => Affine::from_transforms([two_d].iter(), sizing, width, height).into(),
+      };
+    }
+
+    instance
+  }
+}
+
+/// A row-major 3x3 projective map of the plane.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Homography(pub [f32; 9]);
+
+impl From<Affine> for Homography {
+  fn from(affine: Affine) -> Self {
+    Homography([
+      affine.a, affine.c, affine.x, affine.b, affine.d, affine.y, 0.0, 0.0, 1.0,
+    ])
+  }
+}
+
+impl Mul<Homography> for Homography {
+  type Output = Homography;
+
+  fn mul(self, rhs: Homography) -> Self::Output {
+    let (a, b) = (self.0, rhs.0);
+    let mut out = [0.0; 9];
+
+    for row in 0..3 {
+      for column in 0..3 {
+        out[row * 3 + column] = (0..3).map(|k| a[row * 3 + k] * b[k * 3 + column]).sum();
+      }
+    }
+
+    Homography(out)
+  }
+}
+
+impl Homography {
+  /// The affine map this homography equals, or `None` when it is projective.
+  pub fn to_affine(self) -> Option<Affine> {
+    let [a, c, x, b, d, y, p, q, w] = self.0;
+    if p.abs() > 1e-7 || q.abs() > 1e-7 || w.abs() <= f32::EPSILON {
+      return None;
+    }
+
+    Some(Affine {
+      a: a / w,
+      b: b / w,
+      c: c / w,
+      d: d / w,
+      x: x / w,
+      y: y / w,
+    })
+  }
+
+  /// Maps `(x, y)`, or `None` when the point lands behind the viewer.
+  #[inline(always)]
+  pub fn map_point(&self, x: f32, y: f32) -> Option<(f32, f32)> {
+    let m = &self.0;
+    let w = m[6] * x + m[7] * y + m[8];
+    if w <= f32::EPSILON {
+      return None;
+    }
+
+    Some((
+      (m[0] * x + m[1] * y + m[2]) / w,
+      (m[3] * x + m[4] * y + m[5]) / w,
+    ))
+  }
+
+  /// The inverse map, or `None` when it is singular.
+  pub fn invert(self) -> Option<Self> {
+    let [a, b, c, d, e, f, g, h, i] = self.0;
+    let co_a = e * i - f * h;
+    let co_b = f * g - d * i;
+    let co_c = d * h - e * g;
+    let det = a * co_a + b * co_b + c * co_c;
+    if det.abs() <= f32::EPSILON * f32::EPSILON {
+      return None;
+    }
+    let inv = 1.0 / det;
+
+    Some(Homography([
+      co_a * inv,
+      (c * h - b * i) * inv,
+      (b * f - c * e) * inv,
+      co_b * inv,
+      (a * i - c * g) * inv,
+      (c * d - a * f) * inv,
+      co_c * inv,
+      (b * g - a * h) * inv,
+      (a * e - b * d) * inv,
+    ]))
   }
 }
 
@@ -317,6 +595,12 @@ impl Affine {
         Transform::Rotate(angle) => Affine::rotation(angle),
         Transform::Skew(x_angle, y_angle) => Affine::skew(x_angle, y_angle),
         Transform::Matrix(affine) => affine,
+        Transform::Perspective(_)
+        | Transform::RotateX(_)
+        | Transform::RotateY(_)
+        | Transform::Rotate3d(..)
+        | Transform::TranslateZ(_)
+        | Transform::Matrix3d(_) => Affine::IDENTITY,
       };
     }
 
@@ -445,6 +729,41 @@ impl ToCss for Transform {
         dest.write_char(')')
       }
       Self::Matrix(affine) => affine.to_css(dest),
+      Self::Perspective(distance) => {
+        dest.write_str("perspective(")?;
+        distance.to_css(dest)?;
+        dest.write_char(')')
+      }
+      Self::RotateX(a) => {
+        dest.write_str("rotateX(")?;
+        a.to_css(dest)?;
+        dest.write_char(')')
+      }
+      Self::RotateY(a) => {
+        dest.write_str("rotateY(")?;
+        a.to_css(dest)?;
+        dest.write_char(')')
+      }
+      Self::Rotate3d(x, y, z, a) => {
+        write!(dest, "rotate3d({x}, {y}, {z}, ")?;
+        a.to_css(dest)?;
+        dest.write_char(')')
+      }
+      Self::TranslateZ(z) => {
+        dest.write_str("translateZ(")?;
+        z.to_css(dest)?;
+        dest.write_char(')')
+      }
+      Self::Matrix3d(Matrix3d(values)) => {
+        dest.write_str("matrix3d(")?;
+        for (index, value) in values.iter().enumerate() {
+          if index > 0 {
+            dest.write_str(", ")?;
+          }
+          write!(dest, "{value}")?;
+        }
+        dest.write_char(')')
+      }
     }
   }
 }
@@ -523,8 +842,31 @@ impl<'i> FromCss<'i> for Transform {
         Angle::default(),
         Angle::from_css(input)?,
       )),
-      "rotate" => |input| Ok(Self::Rotate(Angle::from_css(input)?)),
+      "rotate" | "rotatez" => |input| Ok(Self::Rotate(Angle::from_css(input)?)),
       "matrix" => |input| Ok(Self::Matrix(Affine::from_css(input)?)),
+      "perspective" => |input| Ok(Self::Perspective(Length::from_css(input)?)),
+      "rotatex" => |input| Ok(Self::RotateX(Angle::from_css(input)?)),
+      "rotatey" => |input| Ok(Self::RotateY(Angle::from_css(input)?)),
+      "rotate3d" => |input| {
+        let x = input.expect_number()?;
+        input.expect_comma()?;
+        let y = input.expect_number()?;
+        input.expect_comma()?;
+        let z = input.expect_number()?;
+        input.expect_comma()?;
+        Ok(Self::Rotate3d(x, y, z, Angle::from_css(input)?))
+      },
+      "translatez" => |input| Ok(Self::TranslateZ(Length::from_css(input)?)),
+      "matrix3d" => |input| {
+        let mut values = [0.0; 16];
+        for (index, value) in values.iter_mut().enumerate() {
+          if index > 0 {
+            input.expect_comma()?;
+          }
+          *value = input.expect_number()?;
+        }
+        Ok(Self::Matrix3d(Matrix3d(values)))
+      },
       _ => return Err(unexpected_token!(location, token)),
     };
 
@@ -593,6 +935,59 @@ mod tests {
     ] {
       assert_eq!(Transform::from_css_str(css), Ok(expected), "{css}");
     }
+  }
+
+  #[test]
+  fn transform_3d_functions_parse() {
+    for (css, expected) in [
+      (
+        "perspective(800px)",
+        Transform::Perspective(Length::Px(800.0)),
+      ),
+      ("rotateX(30deg)", Transform::RotateX(Angle::new(30.0))),
+      ("rotateY(30deg)", Transform::RotateY(Angle::new(30.0))),
+      ("rotateZ(30deg)", Transform::Rotate(Angle::new(30.0))),
+      (
+        "rotate3d(0, 1, 0, 30deg)",
+        Transform::Rotate3d(0.0, 1.0, 0.0, Angle::new(30.0)),
+      ),
+      ("translateZ(10px)", Transform::TranslateZ(Length::Px(10.0))),
+      (
+        "matrix3d(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1)",
+        Transform::Matrix3d(Matrix3d::IDENTITY),
+      ),
+    ] {
+      assert_eq!(Transform::from_css_str(css), Ok(expected), "{css}");
+    }
+  }
+
+  #[test]
+  fn rotate_x_without_perspective_flattens_to_an_affine_squash() {
+    let affine = Matrix3d::rotation(1.0, 0.0, 0.0, Angle::new(60.0))
+      .flatten()
+      .to_affine();
+
+    assert!(
+      affine.is_some_and(|affine| (affine.d - 0.5).abs() < 1e-5 && (affine.a - 1.0).abs() < 1e-5)
+    );
+  }
+
+  #[test]
+  fn perspective_rotate_y_is_projective_and_shrinks_the_far_edge() {
+    let homography = (Matrix3d::perspective(800.0)
+      * Matrix3d::rotation(0.0, 1.0, 0.0, Angle::new(30.0)))
+    .flatten();
+
+    assert!(homography.to_affine().is_none());
+    let near = homography.map_point(-150.0, 150.0).unwrap().1
+      - homography.map_point(-150.0, -150.0).unwrap().1;
+    let far = homography.map_point(150.0, 150.0).unwrap().1
+      - homography.map_point(150.0, -150.0).unwrap().1;
+    assert!(far < near, "{far} < {near}");
+    let inverse = homography.invert().unwrap();
+    let (projected_x, projected_y) = homography.map_point(40.0, -70.0).unwrap();
+    let (x, y) = inverse.map_point(projected_x, projected_y).unwrap();
+    assert!((x - 40.0).abs() < 1e-3 && (y + 70.0).abs() < 1e-3);
   }
 
   #[test]
