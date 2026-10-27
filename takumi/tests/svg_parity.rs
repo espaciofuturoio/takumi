@@ -10,6 +10,8 @@
 //! meant to shrink. A fixture that climbs back above the floor must leave the list
 //! (the test fails if a listed fixture now passes), so the debt can't go stale.
 
+#[path = "ef_3d_svg_divergent.rs"]
+mod ef_3d;
 mod test_utils;
 
 use std::{collections::HashMap, convert::identity, fs, path::Path};
@@ -81,7 +83,11 @@ fn parity(svg_path: &Path, webp_path: &Path) -> Option<f32> {
 
 #[test]
 fn svg_matches_raster_within_tolerance() {
-  let known: HashMap<&str, &str> = KNOWN_DIVERGENT.iter().copied().collect();
+  let known: HashMap<&str, &str> = KNOWN_DIVERGENT
+    .iter()
+    .chain(ef_3d::KNOWN_DIVERGENT)
+    .copied()
+    .collect();
   let dir = Path::new(GENERATED_DIR);
 
   let svgs: Vec<_> = fs::read_dir(dir)
