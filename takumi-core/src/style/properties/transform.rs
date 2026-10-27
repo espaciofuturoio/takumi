@@ -8,7 +8,7 @@ use tiny_skia::Transform as TinyTransform;
 
 use crate::style::{
   Angle, Animatable, Color, FromCss, Length, ListInterpolationStrategy, MakeComputed, ParseResult,
-  PercentageNumber, SizingContext, ToCss, discrete, lerp, unexpected_token,
+  PercentageNumber, SizingContext, ToCss, Transform3d, discrete, lerp, unexpected_token,
 };
 
 const DEFAULT_SCALE: f32 = 1.0;
@@ -27,6 +27,8 @@ pub enum Transform {
   Skew(Angle, Angle),
   /// Applies raw affine matrix values
   Matrix(Affine),
+  /// A 3D function (espaciofuturo fork)
+  ThreeD(Transform3d),
 }
 
 impl MakeComputed for Transform {
@@ -34,6 +36,9 @@ impl MakeComputed for Transform {
     if let Transform::Translate(x, y) = self {
       x.make_computed(sizing);
       y.make_computed(sizing);
+    }
+    if let Transform::ThreeD(transform) = self {
+      transform.make_computed(sizing);
     }
   }
 }
@@ -50,6 +55,7 @@ impl Animatable for Transform {
       Transform::Rotate(_) => Transform::Rotate(Angle::zero()),
       Transform::Skew(_, _) => Transform::Skew(Angle::zero(), Angle::zero()),
       Transform::Matrix(_) => Transform::Matrix(Affine::IDENTITY),
+      Transform::ThreeD(other) => Transform::ThreeD(Transform3d::neutral_value_like(&other)?),
     })
   }
 
@@ -86,6 +92,9 @@ impl Animatable for Transform {
         x: lerp(from_affine.x, to_affine.x, progress),
         y: lerp(from_affine.y, to_affine.y, progress),
       }),
+      (Transform::ThreeD(from), Transform::ThreeD(to)) => Transform::ThreeD(
+        Animatable::interpolated(&from, &to, progress, sizing, current_color),
+      ),
       _ => discrete(from, to, progress),
     };
   }
@@ -412,6 +421,7 @@ impl Affine {
         Transform::Rotate(angle) => Affine::rotation(angle),
         Transform::Skew(x_angle, y_angle) => Affine::skew(x_angle, y_angle),
         Transform::Matrix(affine) => affine,
+        Transform::ThreeD(transform) => transform.to_affine(sizing),
       };
     }
 
@@ -606,6 +616,7 @@ impl ToCss for Transform {
         dest.write_char(')')
       }
       Self::Matrix(affine) => affine.to_css(dest),
+      Self::ThreeD(transform) => transform.to_css(dest),
     }
   }
 }
@@ -718,7 +729,10 @@ impl Transform {
         Ok(Self::Rotate(angle))
       },
       "matrix" => |input, syntax| Ok(Self::Matrix(Affine::parse(input, syntax)?)),
-      _ => return Err(unexpected_token!(&Token::Function(function))),
+      _ => return match Transform3d::parser(&function) {
+        Some(parse) => parser.parse_nested_block(parse),
+        None => Err(unexpected_token!(&Token::Function(function))),
+      },
     };
 
     parser.parse_nested_block(|input| parse(input, syntax))
