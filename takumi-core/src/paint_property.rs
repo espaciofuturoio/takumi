@@ -80,6 +80,8 @@ pub enum EffectKind {
   Group,
   /// The element's foreground filter.
   Filter,
+  /// A projective 3D transform (espaciofuturo fork).
+  Projection(crate::projection_effect::ProjectionStage),
 }
 
 /// The clip and effect a draw paints under.

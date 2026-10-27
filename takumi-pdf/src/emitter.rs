@@ -1657,8 +1657,10 @@ impl PropertySink for ChunkWriter<'_, '_, '_> {
     );
     let mut pushed = 0;
 
+    // PDF paints a projective 3D transform flat (espaciofuturo fork).
     if let Some(owner) = self.owners[id.index()]
       && let Some(node) = self.emitter.scene.root.node_at_path(&owner.path)
+      && !matches!(effect.kind, EffectKind::Projection(_))
     {
       let style = &node.context.style;
 
