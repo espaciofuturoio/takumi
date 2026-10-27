@@ -1650,6 +1650,12 @@ define_style! {
       text_overflow: TextOverflow where anonymous = true,
       translate: SpacePair<Length>,
     }
+    /// espaciofuturo fork: the 3D properties.
+    ef_3d_data: StyleEf3dData {
+      perspective: Option<Length>,
+      perspective_origin: PositionValue = PositionValue::center(),
+      backface_visibility: BackfaceVisibility,
+    }
     /// Blink's `inherited` field group, plus the inherited fields Blink keeps on `ComputedStyleBase` itself.
     inherited_data: StyleInheritedData {
       text_transform: TextTransform where inherit = true,
