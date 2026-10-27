@@ -21,9 +21,10 @@ use crate::{
     ContainerContents, EffectKind, LineClampFloatClip, NodeProperties, PropertyState, PropertyTrees,
   },
   painter::OwnContent,
+  projection_effect::ProjectionStage,
   shadow::SizedShadow,
   sort_key::sort_by_key,
-  style::{Affine, BlurType, ComputedStyle, Display, Float},
+  style::{Affine, BlurType, ComputedStyle, Display, Float, Matrix3d},
   viewport::Viewport,
 };
 #[cfg(feature = "fragmentation")]
@@ -300,6 +301,7 @@ impl StackingContextNode {
 struct ChildBase {
   transform: Affine,
   paint_offset: Point<f32>,
+  perspective: Option<Matrix3d>,
 }
 
 struct StackingContextBuildVisit {
@@ -419,6 +421,7 @@ fn build_layers(
         base: ChildBase {
           transform: Affine::translation(paint_offset.x, paint_offset.y),
           paint_offset,
+          perspective: None,
         },
         container_size,
         state: PropertyState::default(),
@@ -472,11 +475,11 @@ fn build_layers(
       continue;
     }
 
-    let local_transform = current.context.style.local_transform(
-      layout.size.width,
-      layout.size.height,
-      &current.context.sizing,
-    );
+    let Some((local_transform, projection)) =
+      ProjectionStage::local_transform(&current.context, layout, visit.base.perspective)
+    else {
+      continue;
+    };
     let mut current_transform = visit.base.transform;
     current_transform *= Affine::translation(layout.location.x, layout.location.y);
     current_transform *= local_transform;
@@ -489,6 +492,7 @@ fn build_layers(
         .context
         .style
         .paint_offset_after_translation(visit.base.paint_offset + layout.location, local_transform),
+      perspective: ProjectionStage::child_perspective(&current.context, layout),
     };
     containing_blocks.record_placement(visit.node_id, child_base);
 
@@ -500,6 +504,13 @@ fn build_layers(
     };
     let line_clamp_float_clip = LineClampFloatClip::of(&current.context, layout, current_transform)
       .or(visit.line_clamp_float_clip);
+    let state = ProjectionStage::enter(
+      &mut properties,
+      state,
+      &visit.path,
+      current_transform,
+      projection,
+    );
     let node_properties = NodeProperties::build(
       &mut properties,
       state,
@@ -1653,6 +1664,7 @@ fn set_effect_bounds(
     } else {
       union
     };
+    let (grown, unknown) = ProjectionStage::grow(properties.effect(id).kind, grown, unknown);
 
     if let Some(parent) = properties.effect(id).parent {
       let (parent_union, parent_unknown) = &mut bounds[parent.index()];

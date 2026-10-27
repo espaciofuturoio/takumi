@@ -8,6 +8,8 @@ pub mod animated_image_sources;
 pub mod animation;
 #[path = "fixtures/deep_nesting.rs"]
 pub mod deep_nesting;
+#[path = "fixtures/ef_3d_animation.rs"]
+pub mod ef_3d_animation;
 #[path = "fixtures/html_byte_order_mark.rs"]
 pub mod html_byte_order_mark;
 #[path = "fixtures/jpeg_output.rs"]

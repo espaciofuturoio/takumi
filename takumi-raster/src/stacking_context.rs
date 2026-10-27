@@ -13,6 +13,7 @@ use crate::{
   draw_debug_border, draw_table_box_shell,
   inline_drawing::draw_own_content,
   layout::tree::RenderNode,
+  projection::project_canvas,
   style::{Affine, BlendMode, Filter, SizingContext, expand_filter_bounds},
   within_pixmap_pixel_budget,
 };
@@ -251,6 +252,9 @@ impl ScenePainter<'_, '_> {
     } else {
       Ok(())
     };
+    if let EffectKind::Projection(stage) = kind {
+      project_canvas(canvas, stage);
+    }
     let opacity = if result.is_err() {
       0.0
     } else if kind == EffectKind::Group {
