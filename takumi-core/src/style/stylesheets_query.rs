@@ -169,6 +169,7 @@ impl ComputedStyle {
       || self.is_z_index_applicable(is_flex_or_grid_item)
       || self.has_transform_related_property()
       || self.needs_offscreen_compositing()
+      || self.creates_3d_stacking_context()
   }
 
   /// Whether the element floats in a paint layer of its own, as Blink's floats with a
@@ -272,6 +273,9 @@ impl ComputedStyle {
 
   /// The local transform, in CSS Transforms 2 order around `transform-origin`.
   pub fn local_transform(&self, width: f32, height: f32, sizing: &SizingContext) -> Affine {
+    if let Some(local) = self.local_transform_3d(width, height, sizing) {
+      return local;
+    }
     let (origin_x, origin_y) = self
       .svg_data
       .transform_origin
