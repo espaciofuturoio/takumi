@@ -53,6 +53,7 @@ pub mod paint_property;
 pub mod paint_tree;
 pub mod painter;
 pub mod path_data;
+pub mod projection_effect;
 /// Font and image resource management.
 pub mod resources;
 pub mod scene;
