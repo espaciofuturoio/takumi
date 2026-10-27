@@ -22,9 +22,10 @@ use crate::{
     PropertyTrees,
   },
   painter::OwnContent,
+  projection_effect::ProjectionStage,
   shadow::SizedShadow,
   sort_key::sort_by_key,
-  style::{Affine, BlurType, ComputedStyle, Display, Float},
+  style::{Affine, BlurType, ComputedStyle, Display, Float, Matrix3d},
   viewport::Viewport,
 };
 #[cfg(feature = "fragmentation")]
@@ -330,6 +331,7 @@ impl StackingContextNode {
 struct ChildBase {
   transform: Affine,
   paint_offset: Point<f32>,
+  perspective: Option<Matrix3d>,
 }
 
 struct StackingContextBuildVisit {
@@ -477,6 +479,7 @@ fn build_layers(
         base: ChildBase {
           transform: Affine::translation(paint_offset.x, paint_offset.y),
           paint_offset,
+          perspective: None,
         },
         container_size,
         state: PropertyState::default(),
@@ -536,14 +539,11 @@ fn build_layers(
     }
 
     // A transform applies to no box that is not atomic.
-    let local_transform = if layer.is_some() {
-      Affine::IDENTITY
-    } else {
-      current.context.style.local_transform(
-        layout.size.width,
-        layout.size.height,
-        &current.context.sizing,
-      )
+    let Some((local_transform, projection)) = (match layer {
+      Some(_) => Some((Affine::IDENTITY, None)),
+      None => ProjectionStage::local_transform(&current.context, layout, visit.base.perspective),
+    }) else {
+      continue;
     };
     let mut current_transform = visit.base.transform;
     current_transform *= Affine::translation(layout.location.x, layout.location.y);
@@ -557,6 +557,7 @@ fn build_layers(
         .context
         .style
         .paint_offset_after_translation(visit.base.paint_offset + layout.location, local_transform),
+      perspective: ProjectionStage::child_perspective(&current.context, layout),
     };
     // An inline layer shares its block's node, whose placement and contents stay the block's.
     if layer.is_none() {
@@ -575,6 +576,13 @@ fn build_layers(
       Some(_) => StitchedFragment::unbroken(layout),
       None => layout_results.stitched_fragment(visit.node_id, visit.fragment_index)?,
     };
+    let state = ProjectionStage::enter(
+      &mut properties,
+      state,
+      &visit.path,
+      current_transform,
+      projection,
+    );
     let node_properties = NodeProperties::build(
       &mut properties,
       state,
@@ -1860,6 +1868,7 @@ fn set_effect_bounds(
     } else {
       union
     };
+    let (grown, unknown) = ProjectionStage::grow(properties.effect(id).kind, grown, unknown);
 
     if let Some(parent) = properties.effect(id).parent {
       let (parent_union, parent_unknown) = &mut bounds[parent.index()];
