@@ -319,6 +319,8 @@ impl PropertySink for ChunkWriter<'_, '_, '_> {
 
   fn begin_effect(&mut self, id: EffectId, effect: &EffectNode) {
     let opened = match self.owners[id.index()] {
+      // SVG paints a projective 3D transform flat (espaciofuturo fork).
+      Some(_) if matches!(effect.kind, EffectKind::Projection(_)) => Ok(Vec::new()),
       Some(owner) => self.open_effect(owner, effect.kind),
       None => Ok(Vec::new()),
     };
