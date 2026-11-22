@@ -19,7 +19,7 @@ concurrency:
 jobs:
   rebase:
     name: Rebase onto upstream
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, ef-forks]
     outputs:
       changed: ${{ steps.sync.outputs.changed }}
       sha: ${{ steps.sync.outputs.sha }}
@@ -81,7 +81,7 @@ jobs:
     name: Report release failure
     needs: [rebase, release]
     if: failure() && needs.rebase.result == 'success'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, ef-forks]
     steps:
       - env:
           GH_TOKEN: ${{ github.token }}
