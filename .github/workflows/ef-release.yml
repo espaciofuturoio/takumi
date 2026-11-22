@@ -36,6 +36,7 @@ env:
 jobs:
   version:
     name: Resolve version
+    # GitHub-hosted: public fork, standard runners free; no self-hosted on public repos — owner 2026-11-22
     runs-on: ubuntu-latest
     outputs:
       sha: ${{ steps.resolve.outputs.sha }}
@@ -58,6 +59,7 @@ jobs:
   test-rust:
     name: Rust tests and goldens
     needs: version
+    # GitHub-hosted: public fork, standard runners free; no self-hosted on public repos — owner 2026-11-22
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -88,6 +90,7 @@ jobs:
   build-helpers:
     name: Build @takumi-rs/helpers
     needs: version
+    # GitHub-hosted: public fork, standard runners free; no self-hosted on public repos — owner 2026-11-22
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -120,6 +123,7 @@ jobs:
           - host: ubuntu-latest
             target: x86_64-unknown-linux-musl
             build: bun run build --target x86_64-unknown-linux-musl -x
+    # GitHub-hosted: public fork, standard runners free; no self-hosted on public repos — owner 2026-11-22
     runs-on: ${{ matrix.settings.host }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -172,6 +176,7 @@ jobs:
   build-wasm:
     name: Build @takumi-rs/wasm
     needs: [version, build-helpers]
+    # GitHub-hosted: public fork, standard runners free; no self-hosted on public repos — owner 2026-11-22
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -211,6 +216,7 @@ jobs:
   package:
     name: Build takumi-js and pack
     needs: [version, test-rust, build-helpers, build-napi, build-wasm]
+    # GitHub-hosted: public fork, standard runners free; no self-hosted on public repos — owner 2026-11-22
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -244,6 +250,7 @@ jobs:
   publish:
     name: Publish v${{ needs.version.outputs.version }}
     needs: [version, package]
+    # GitHub-hosted: public fork, standard runners free; no self-hosted on public repos — owner 2026-11-22
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -286,6 +293,7 @@ jobs:
           - name: linux-x64-musl
             host: ubuntu-latest
             alpine: true
+    # GitHub-hosted: public fork, standard runners free; no self-hosted on public repos — owner 2026-11-22
     runs-on: ${{ matrix.host }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -315,6 +323,7 @@ jobs:
     name: Mark release broken
     needs: [version, smoke]
     if: failure()
+    # GitHub-hosted: public fork, standard runners free; no self-hosted on public repos — owner 2026-11-22
     runs-on: ubuntu-latest
     steps:
       - env:
