@@ -19,6 +19,7 @@ concurrency:
 jobs:
   rebase:
     name: Rebase onto upstream
+    # GitHub-hosted: public fork, standard runners free; no self-hosted on public repos — owner 2026-11-22
     runs-on: ubuntu-latest
     outputs:
       changed: ${{ steps.sync.outputs.changed }}
@@ -81,6 +82,7 @@ jobs:
     name: Report release failure
     needs: [rebase, release]
     if: failure() && needs.rebase.result == 'success'
+    # GitHub-hosted: public fork, standard runners free; no self-hosted on public repos — owner 2026-11-22
     runs-on: ubuntu-latest
     steps:
       - env:
